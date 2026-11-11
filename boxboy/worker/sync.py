@@ -1,11 +1,11 @@
 """Move one run's files between <runs>/<name>/ and a Hugging Face model repo (folder <name>/).
 Runs on the rented instance; `bb launch` uploads this file next to worker.sh.
 
-    python sync.py push <hf_repo> <name> [--all] [--status CODE] [--log FILE] [--runs DIR]
+    python sync.py push <hf_repo> <name> [--all] [--status CODE] [--log FILE] [--runs DIR] [--ckpt-s SECONDS]
     python sync.py pull <hf_repo> <name> [--any] [--runs DIR]     # exit code 3 if the run already finished
 
 Periodic pushes skip ckpt.pkl (large, only needed to resume) unless --all is given or it has not
-been uploaded for an hour. --status writes STATUS.json, which marks the run finished (code 0) or failed.
+been uploaded for --ckpt-s seconds (default 900). --status writes STATUS.json, which marks the run finished (code 0) or failed.
 pull --any is for a job that reads another run's files: it always downloads and never returns 3.
 """
 import argparse
@@ -16,8 +16,6 @@ import time
 
 from huggingface_hub import HfApi, snapshot_download
 from huggingface_hub.utils import RepositoryNotFoundError
-
-CKPT_EVERY_S = 3600
 
 
 def main():
@@ -30,6 +28,7 @@ def main():
     ap.add_argument("--status", type=int, default=None)
     ap.add_argument("--log", default=None)
     ap.add_argument("--runs", default="runs")
+    ap.add_argument("--ckpt-s", type=float, default=900)
     a = ap.parse_args()
     api = HfApi()
     local = os.path.join(a.runs, a.name)
@@ -58,7 +57,7 @@ def main():
         json.dump({"exit_code": a.status, "finished_utc": time.strftime("%FT%TZ", time.gmtime()),
                    "instance": os.environ.get("CONTAINER_ID")}, open(os.path.join(local, "STATUS.json"), "w"))
     stamp = os.path.join(local, ".ckpt_pushed")
-    due = a.all or not os.path.exists(stamp) or time.time() - os.path.getmtime(stamp) > CKPT_EVERY_S
+    due = a.all or not os.path.exists(stamp) or time.time() - os.path.getmtime(stamp) > a.ckpt_s
     ignore = [".ckpt_pushed", "*.tmp"] + ([] if due else ["ckpt.pkl"])
     api.upload_folder(repo_id=a.repo, folder_path=local, path_in_repo=a.name, ignore_patterns=ignore,
                       commit_message=f"{a.name}: {'final' if a.status is not None else 'sync'}")

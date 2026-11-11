@@ -19,16 +19,25 @@ echo "[worker] start $(date -u +%FT%TZ)"
 job() { python3 -c "import base64,json,os,sys; print(json.loads(base64.b64decode(os.environ['BB_JOB_B64']))[sys.argv[1]])" "$1"; }
 NAME=$(job name); CMD=$(job cmd); REF=$(job ref); REPO_URL=$(job repo_url); PROJECT=$(job project)
 HF_REPO=$(job hf_repo); ON_DONE=$(job on_done); SYNC_S=$(job sync_s); RUNS=$(job runs_dir)
-SETUP=$(job setup); CHECK=$(job check); MAX_HOURS=$(job max_hours)
+SETUP=$(job setup); CHECK=$(job check); MAX_HOURS=$(job max_hours); CKPT_S=$(job ckpt_s)
 eval "$(python3 -c "import base64,json,os,shlex; [print(f'export {k}={shlex.quote(str(v))}') for k,v in json.loads(base64.b64decode(os.environ['BB_JOB_B64']))['env'].items()]")"
 export HF_TOKEN BB_HF_REPO=$HF_REPO
 echo "[worker] job=$NAME project=$PROJECT ref=$REF hf=$HF_REPO on_done=$ON_DONE max_hours=$MAX_HOURS"
-sync() { python "$HERE/sync.py" "$@" --runs "$RUNS"; }
+# Pushes take a lock, so the final push waits for a periodic one still in flight instead of racing it.
+LOCK=()
+command -v flock >/dev/null && LOCK=(flock -w 1800 "$HERE/.sync.lock")   # a push stuck 30 min counts as failed
+sync() { "${LOCK[@]}" python "$HERE/sync.py" "$@" --runs "$RUNS" --ckpt-s "$CKPT_S"; }
 
 finish() {   # $1 = exit code of the job
-    sync push "$HF_REPO" "$NAME" --all --status "$1" --log "$LOG" || echo "[worker] final upload FAILED"
+    local uploaded=no
+    for try in 1 2 3; do
+        sync push "$HF_REPO" "$NAME" --all --status "$1" --log "$LOG" && { uploaded=yes; break; }
+        echo "[worker] final upload failed (attempt $try of 3)"; [ $try = 3 ] || sleep 60
+    done
     if [ "$ON_DONE" = "keep" ]; then return; fi
-    if [ "$1" = "0" ] && [ "$ON_DONE" = "destroy" ]; then
+    if [ $uploaded = no ]; then
+        echo "[worker] final upload FAILED; stopping instead of destroying, so the results stay on the disk"
+    elif [ "$1" = "0" ] && [ "$ON_DONE" = "destroy" ]; then
         echo "[worker] done, destroying instance $CONTAINER_ID"
         # newer CLIs ask for confirmation (and exit 0 when it is not given), older ones have no --yes
         vastai destroy instance "$CONTAINER_ID" --api-key "$CONTAINER_API_KEY" --yes \
@@ -62,7 +71,7 @@ if [ $rc = 3 ]; then echo "[worker] run already finished"; finish 0; exit 0; fi
 SYNC_PID=$!
 echo "[worker] running: $CMD"
 timeout --kill-after=60 "${MAX_HOURS}h" bash -c "$CMD"; rc=$?
-kill $SYNC_PID 2>/dev/null
+kill $SYNC_PID 2>/dev/null   # a push it already started keeps running and holds the lock; finish waits for it
 [ $rc = 124 ] && echo "[worker] job hit the ${MAX_HOURS} h limit (max_hours) and was stopped"
 echo "[worker] command exited with $rc at $(date -u +%FT%TZ)"
 finish $rc

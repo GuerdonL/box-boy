@@ -60,7 +60,7 @@ What happens on each instance:
 2. It runs the project's `setup` command (install dependencies) and its `check` command (for example, that the GPU is visible).
 3. It restores `runs/<name>/` from the Hugging Face repo if an earlier attempt left anything there.
 4. It runs the job, uploading `runs/<name>/` every 10 minutes and once more at the end, with `worker.log` and a `STATUS.json`.
-5. On success it destroys itself. On failure, or after `max_hours`, it stops instead: the GPU is no longer billed
+5. On success it destroys itself. On failure, after `max_hours`, or if the final upload fails three times, it stops instead: the GPU is no longer billed
    but the disk is, until you read the log and run `bb destroy <name>`.
 
 ## boxboy.toml
@@ -91,6 +91,7 @@ exclude_geo = "CN"             # Hugging Face is unreachable from some countries
 
 [run]
 sync_s = 600                   # seconds between uploads
+ckpt_s = 900                   # ckpt.pkl goes up at most this often (it is large)
 on_done = "destroy"            # destroy | stop | keep, for a job that succeeds
 max_hours = 24                 # a job running longer is stopped as failed
 ```
@@ -112,7 +113,7 @@ override the file for one launch.
 - The project repo must be public: instances clone it without a login. This repo can stay private, because the
   instance-side scripts are handed over through the Hugging Face repo.
 - One job is one instance. Nothing here splits a run across machines.
-- Checkpoints are expected at `runs/<name>/ckpt.pkl` (uploaded at most hourly, because they are large; everything
+- Checkpoints are expected at `runs/<name>/ckpt.pkl` (uploaded at most every `ckpt_s` seconds, 15 min by default, because they are large; everything
   else in the folder goes up on every sync).
 
 Tests: `.venv/bin/python -m pytest tests -q`.

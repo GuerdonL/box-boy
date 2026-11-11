@@ -68,3 +68,19 @@ def test_offer_query_and_slug():
 
 def test_bundle_id_is_stable():
     assert cli.bundle_id() == cli.bundle_id() and len(cli.bundle_id()) == 12
+
+
+def test_ssh_args_batch_and_interactive(monkeypatch):
+    monkeypatch.setattr(cli, "sh", lambda *a, **k: "warning: old cli\nssh://root@1.2.3.4:2222")
+    batch, inter = cli.ssh_args({"id": 1}), cli.ssh_args({"id": 1}, batch=False)
+    assert "BatchMode=yes" in batch and "BatchMode=yes" not in inter
+    for args in (batch, inter):           # every -o has a value after it
+        assert all(not args[k + 1].startswith("-") for k, x in enumerate(args) if x == "-o")
+        assert args[-3:] == ["-p", "2222", "root@1.2.3.4"]
+
+
+def test_host_cuda_floor_follows_the_image():
+    assert cli.image_cuda("vastai/pytorch:cuda-13.2.1-auto") == 13.2 and cli.image_cuda("python:3.12") is None
+    o = dict(cli.DEFAULTS["offer"])
+    assert cli.min_host_cuda({"image": "vastai/pytorch:cuda-13.2.1-auto"}, o) == 13.2
+    assert cli.min_host_cuda({"image": "python:3.12"}, o) == o["min_cuda"]

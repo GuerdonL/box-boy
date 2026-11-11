@@ -44,9 +44,16 @@ bundle hash, so running instances keep the version they started with.
   from the exact onstart command: download from the HF repo, clone, setup, check, restore, a short job,
   periodic and final upload, `bb-pull`. `bb logs` (uploaded copy), `bb collect`, `bb status`, `bb doctor`
   and `bb launch --dry-run` were run against the live Vast and Hugging Face accounts with `vastai` 1.11.
-- **Not yet exercised:** a real `bb launch` with the current code (so: the HF download inside a real onstart,
-  the SSH key attach, `bb logs` over SSH, `bb wait`, `bb destroy`), restore after an instance restart, the
-  failure path (stop), and the `max_hours` timeout. Do one short real job before trusting a long one.
+- **Real launches, 2026-11-11** (`gpu_xl`, 20 updates, snapshot at 10):
+  - `smoke_u20` on a host with driver 550 / CUDA 12.4: worker fetched from HF in a real onstart, SSH key attach and
+    `bb logs` over SSH worked, the GPU `check` failed (driver older than the image's CUDA 13.2), log uploaded,
+    instance stopped: the failure path works. `bb destroy` worked on it. This led to `min_host_cuda`.
+  - `smoke_b` on a CUDA 13.2 host: setup, check, 82 s compile, about 4 s/update, periodic and final upload, self-destroy.
+    `bb collect --ckpt` returned STATUS.json (exit 0), log.csv, params.pkl, ckpt.pkl, snap/u00010.pkl, worker.log.
+- **Not yet exercised:** `bb wait`, restore after an instance restart, the `max_hours` timeout, the final-upload
+  retry (simulated only), and the `flock` path under a real collision.
+- **Known wart:** `bb status` prints `cur_state` (Vast's intended state) when `actual_status` is empty, so a loading
+  or stopping instance can read "running". `bb logs` on a loading instance says "no uploaded log" rather than "loading".
 
 ## Traps
 
@@ -58,7 +65,10 @@ bundle hash, so running instances keep the version they started with.
 - **`/etc/environment` on the instances is not valid shell** (one line fails to source). The worker sources it with
   errors ignored. Do not `set -e` around that.
 - **The server-side `cuda_max_good` offer filter drops valid offers**; the CUDA floor is applied client-side
-  (`offer.min_cuda`).
+  (`offer.min_cuda`, raised to the CUDA the image tag names: `min_host_cuda`).
+- **A host driver older than the image's CUDA fails at `cuInit` with `CUDA_ERROR_SYSTEM_DRIVER_MISMATCH`** on consumer
+  GPUs (no forward compatibility). Seen 2026-11-11: driver 550 (CUDA 12.4) with `cuda-13.2.1` image; jax fell back
+  to CPU and the `check` command caught it.
 - **Onstart commands have a size limit.** A test keeps the command under 4000 characters; the job's command,
   `setup`, `check` and `env` all ride in it.
 - **`HF_TOKEN` reaches the instance through `--env`.** The onstart command falls back to grepping

@@ -45,7 +45,7 @@ DEFAULTS = {
     "env": {},                          # extra environment variables for the job
     "offer": {"gpu": "RTX_4090", "num_gpus": 1, "max_price": 0.60, "max_total": 5.0, "disk": 30,
               "reliability": 0.98, "inet_down": 200, "min_cuda": 12.0, "exclude_geo": "CN"},
-    "run": {"sync_s": 600, "on_done": "destroy", "max_hours": 24},
+    "run": {"sync_s": 600, "ckpt_s": 900, "on_done": "destroy", "max_hours": 24},
 }
 
 
@@ -165,7 +165,7 @@ def upload_bundle(hf_repo):
 def make_job(name, cmd, ref, cfg, hf_repo, a):
     return dict(name=name, cmd=cmd, ref=ref, project=cfg["name"], repo_url=f"https://github.com/{cfg['slug']}.git",
                 hf_repo=hf_repo, runs_dir=cfg["runs_dir"], setup=cfg["setup"], check=cfg["check"], env=cfg["env"],
-                on_done=a.on_done or cfg["run"]["on_done"], sync_s=a.sync_s or cfg["run"]["sync_s"],
+                on_done=a.on_done or cfg["run"]["on_done"], sync_s=a.sync_s or cfg["run"]["sync_s"], ckpt_s=cfg["run"]["ckpt_s"],
                 max_hours=a.max_hours or cfg["run"]["max_hours"])
 
 
@@ -177,6 +177,18 @@ def onstart_cmd(job, bid):
     return (f"export BB_JOB_B64={b64}; mkdir -p /root/boxboy && cd /root/boxboy && T={tok} && "
             + " && ".join(f'curl -fsSL -H "Authorization: Bearer $T" {url}/{f} -o {f}' for f in WORKER_FILES)
             + " && nohup bash worker.sh > /dev/null 2>&1 &")
+
+
+def image_cuda(image):
+    """CUDA version an image tag names (vastai/pytorch:cuda-13.2.1-auto -> 13.2), or None."""
+    m = re.search(r"cuda[-_]?(\d+)\.(\d+)", image or "")
+    return float(f"{m.group(1)}.{m.group(2)}") if m else None
+
+
+def min_host_cuda(cfg, o):
+    """The host driver must support the image's CUDA: consumer GPUs (4090, 5090) cannot use CUDA forward
+    compatibility, so an older driver fails at cuInit with CUDA_ERROR_SYSTEM_DRIVER_MISMATCH."""
+    return max(o["min_cuda"], image_cuda(cfg["image"]) or 0)
 
 
 def offer_query(o):
@@ -216,13 +228,13 @@ def public_key():
     return None
 
 
-def ssh_args(i):
+def ssh_args(i, batch=True):
     url = sh("vastai", "ssh-url", str(i["id"]), check=False).splitlines()[-1:]   # older CLIs print a warning first
     m = re.match(r"ssh://(\S+?)@(\S+?):(\d+)", url[0]) if url else None
     if not m:
         return None
     return ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
-            "-o", "ConnectTimeout=10", "-o", "BatchMode=yes", "-p", m.group(3), f"{m.group(1)}@{m.group(2)}"]
+            "-o", "ConnectTimeout=10"] + (["-o", "BatchMode=yes"] if batch else []) + ["-p", m.group(3), f"{m.group(1)}@{m.group(2)}"]
 
 
 def last_uploads(hf_repo):
@@ -260,14 +272,17 @@ def cmd_launch(a):
     found = vast("search", "offers", offer_query(o), "-o", "dph_total+")
     if not isinstance(found, list):
         sys.exit(f"offer search failed: {found}")
-    offers = sorted((x for x in found if (x.get("cuda_max_good") or 0) >= o["min_cuda"]), key=lambda x: x["dph_total"])
+    cuda = min_host_cuda(cfg, o)
+    offers = sorted((x for x in found if (x.get("cuda_max_good") or 0) >= cuda), key=lambda x: x["dph_total"])
     if len(offers) < len(jobs):
-        sys.exit(f"only {len(offers)} offers match for {len(jobs)} jobs; raise --max-price or relax [offer] in {CONFIG_NAME}")
+        sys.exit(f"only {len(offers)} offers match for {len(jobs)} jobs (host CUDA >= {cuda:g}, for the image); "
+                 f"raise --max-price, relax [offer] in {CONFIG_NAME}, or use an image with an older CUDA")
     picks = offers[: len(jobs)]
     total = sum(x["dph_total"] for x in picks)
-    print(f"{cfg['name']}: commit {ref[:8]} of {cfg['slug']}; results to hf:{hf_repo}; image {cfg['image']}")
+    print(f"{cfg['name']}: commit {ref[:8]} of {cfg['slug']}; results to hf:{hf_repo}; image {cfg['image']} (host CUDA >= {cuda:g})")
     for (name, cmd), x in zip(jobs, picks):
-        print(f"  {name:20s} {x['num_gpus']}x {x['gpu_name']} ${x['dph_total']:.3f}/h {x.get('geolocation', '?'):18s} | {cmd}")
+        print(f"  {name:20s} {x['num_gpus']}x {x['gpu_name']} ${x['dph_total']:.3f}/h {x.get('geolocation', '?'):18s} "
+              f"cuda {x.get('cuda_max_good', '?')} | {cmd}")
     print(f"{len(jobs)} instances, ${total:.2f}/h in total while they run. On success each "
           f"{'destroys itself' if (a.on_done or cfg['run']['on_done']) == 'destroy' else 'is kept or stopped'}; "
           f"a failed job stops its instance (disk still billed until you destroy it).")
@@ -342,10 +357,9 @@ def cmd_logs(a):
 
 def cmd_ssh(a):
     _, cfg = project()
-    ssh = ssh_args(by_name(cfg, [a.name])[0])
+    ssh = ssh_args(by_name(cfg, [a.name])[0], batch=False)   # interactive: allow passphrase / host prompts
     if not ssh:
         sys.exit("no SSH address for that instance yet")
-    ssh = [x for x in ssh if x != "BatchMode=yes"]
     if a.command:
         sys.exit(subprocess.run(ssh + [" ".join(shlex.quote(c) for c in a.command)]).returncode)
     os.execvp("ssh", ssh)
