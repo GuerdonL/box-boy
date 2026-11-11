@@ -9,7 +9,7 @@ plain-text jobs files; `bb` is run from inside the project's checkout.
 
 ## Set up a control machine
 
-On a fresh Ubuntu or Debian server (a $6 droplet is enough):
+On a fresh Ubuntu or Debian server (a small droplet; 2 GB of RAM is comfortable if you also run the project's CPU tests):
 
 ```
 git clone git@github.com:GuerdonL/box-boy.git && cd box-boy && ./setup.sh
