@@ -1,0 +1,22 @@
+[project]
+name = "boxboy"
+version = "0.1.0"
+description = "Run a project's training jobs on rented Vast.ai GPU instances, one job per instance, results to Hugging Face"
+requires-python = ">=3.11"
+dependencies = ["vastai", "huggingface_hub>=0.30"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+bb = "boxboy.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["boxboy", "boxboy.worker"]
+
+[tool.setuptools.package-data]
+boxboy = ["worker/*"]
